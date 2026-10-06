@@ -1,0 +1,121 @@
+name: Build TikTok Username dylib
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - main
+      - master
+    paths:
+      - 'TikTokUsernameMenu_payload.zip'
+      - '.github/workflows/build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build iOS arm64/arm64e dylib
+    runs-on: macos-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Check payload ZIP
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f TikTokUsernameMenu_payload.zip
+          unzip -t TikTokUsernameMenu_payload.zip
+
+      - name: Setup Theos
+        uses: waruhachi/theos-action@v2.6.3
+        with:
+          theos-src: theos/theos
+          theos-branch: master
+          sdks-src: theos/sdks
+          sdks-branch: master
+          remotelog: false
+          libgcuniversal: false
+          altlist: false
+          comet: false
+          orion: false
+
+      - name: Prepare source
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          rm -rf payload _build output
+          mkdir -p payload output
+
+          unzip -q TikTokUsernameMenu_payload.zip -d payload
+
+          required=(
+            Makefile
+            Tweak.xm
+            NativeSNS.h
+            NativeSNS.mm
+            SNSFlow.h
+            SNSMenuHook.xm
+            xelahotmodmenubase.plist
+          )
+
+          for f in "${required[@]}"; do
+            test -f "payload/$f" || {
+              echo "Missing payload/$f"
+              exit 1
+            }
+          done
+
+          git clone --depth 1 \
+            https://github.com/xelahot/iOS-Mod-Menu-Base.git \
+            _build
+
+          for f in "${required[@]}"; do
+            cp -f "payload/$f" "_build/$f"
+          done
+
+      - name: Build dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd _build
+          make clean
+          make FINALPACKAGE=1
+
+      - name: Collect dylib
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DYLIB_PATH="$(find _build/.theos \
+            -type f \
+            -name 'xelahotmodmenubase.dylib' \
+            -print -quit)"
+
+          if [[ -z "$DYLIB_PATH" || ! -f "$DYLIB_PATH" ]]; then
+            echo "ERROR: dylib was not produced."
+            find _build/.theos -maxdepth 8 -type f -print || true
+            exit 1
+          fi
+
+          cp -f "$DYLIB_PATH" \
+            output/TikTokUsernameMenu.dylib
+
+          cp -f _build/xelahotmodmenubase.plist \
+            output/TikTokUsernameMenu.plist
+
+          file output/TikTokUsernameMenu.dylib
+          lipo -info output/TikTokUsernameMenu.dylib || true
+
+          shasum -a 256 output/* \
+            > output/SHA256SUMS.txt
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: TikTokUsernameMenu-iOS-dylib
+          path: output/
+          if-no-files-found: error
